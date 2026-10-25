@@ -4,10 +4,12 @@ A minimal Void Linux x86_64 **glibc** + IceWM desktop for the Samsung
 NP530XBB-AD2BR: Firefox, PCManFM, Zathura, PulseAudio and NetworkManager.
 Hardware specifications must be verified on the actual notebook.
 
-The original [installation guide](VOID_ICEWM_SAMSUNG_530X_GUIDE.md) is included
-unchanged. Read it before installing the OS. These scripts cover an initial
-post-install setup; they do not partition disks, install a bootloader or migrate
-ChromeOS Flex data.
+The [installation guide](VOID_ICEWM_SAMSUNG_530X_GUIDE.md) is included in this
+repository. It covers the internal install and an optional external-SSD
+rehearsal, including the USB-root initramfs and UEFI/BIOS boot requirements.
+Read it before installing the OS. These scripts cover an initial post-install
+setup; they do not partition disks, install a bootloader or migrate ChromeOS
+Flex data.
 
 ## After installing Void
 

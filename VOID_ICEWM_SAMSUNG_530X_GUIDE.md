@@ -5,7 +5,9 @@
 **Approach:** Void Linux x86_64 **glibc**, Xorg, IceWM, runit; avoid unnecessary services.  
 **Last reviewed:** 2026-10-25
 
-> **Warning — destructive installation:** This guide replaces ChromeOS Flex and erases the internal disk when you repartition it. Back up your files before proceeding. Verify device names with `lsblk` before writing to any disk. Never paste example disk paths blindly.
+**Validation status:** The external-SSD path was boot-tested in QEMU with both UEFI and BIOS firmware on 2026-10-25. Hardware-specific checks still need to be run on the notebook.
+
+> **Warning — destructive installation:** This guide replaces ChromeOS Flex and erases the internal disk when you repartition it. The external-SSD rehearsal in §2.1 does not touch the internal disk. Back up your files before proceeding. Verify device names with `lsblk` before writing to any disk. Never paste example disk paths blindly.
 
 ## 1. Goals and hardware assumptions
 
@@ -45,6 +47,68 @@ ip link
 
 Typical eMMC names look like `/dev/mmcblk0`; the installer may also show `/dev/sda` or `/dev/nvme0n1`. **Do not assume any one name is correct.**
 
+### 2.1 Recommended: rehearse on an external SSD first
+
+An install on an external USB SSD verifies the boot chain and the notebook hardware without erasing the internal eMMC. The SSD will be erased; back up any files on it first. You still need a separate live USB for the installer. In the live shell you are usually root; omit `sudo` if it is not installed.
+
+Identify the SSD by model, capacity and transport (not by a guessed name):
+
+```sh
+lsblk -o NAME,SIZE,TYPE,TRAN,MODEL,SERIAL,FSTYPE,MOUNTPOINTS
+```
+
+For an SSD that must boot on both UEFI and legacy/BIOS firmware, create a GPT with a 1 MiB BIOS boot partition before the ESP. For UEFI-only, the ESP + root layout is sufficient.
+
+```sh
+# Replace /dev/sdX with the external SSD. This erases the disk.
+sudo sgdisk --zap-all /dev/sdX
+sudo sgdisk --new=1:0:+1M --typecode=1:ef02 --change-name=1:BIOSBOOT --new=2:0:+512M --typecode=2:ef00 --change-name=2:EFI --new=3:0:0 --typecode=3:8300 --change-name=3:VOIDROOT /dev/sdX
+sudo partprobe /dev/sdX
+```
+
+Run `void-installer`, select `/dev/sdX`, and use manual partitioning to format the ESP as vfat (mount `/boot/efi`) and the root partition as ext4 (mount `/`). Install GRUB for UEFI, and verify the ESP and bootloader target are on `/dev/sdX`. **Do not let the installer repartition a different disk.**
+
+If legacy/BIOS boot is also required, add BIOS GRUB from a chroot. Install the BIOS GRUB package first if the installer only provided the UEFI variant:
+
+```sh
+sudo mount /dev/sdX3 /mnt
+sudo mount /dev/sdX2 /mnt/boot/efi
+sudo mount --bind /dev /mnt/dev
+sudo mount --bind /dev/pts /mnt/dev/pts
+sudo mount -t proc proc /mnt/proc
+sudo mount -t sysfs sysfs /mnt/sys
+sudo cp /etc/resolv.conf /mnt/etc/resolv.conf
+sudo chroot /mnt xbps-install -S grub
+sudo chroot /mnt grub-install --target=i386-pc --recheck /dev/sdX
+sudo umount /mnt/sys /mnt/proc /mnt/dev/pts /mnt/dev /mnt/boot/efi /mnt
+```
+
+**Critical for USB-root boot:** the initramfs must contain the USB storage and xHCI/UAS drivers. A host-only initramfs generated for the internal disk may not find `/` on the external SSD. Regenerate a generic initramfs after installation:
+
+```sh
+sudo mount /dev/sdX3 /mnt
+sudo mount /dev/sdX2 /mnt/boot/efi
+sudo mount --bind /dev /mnt/dev
+sudo mount --bind /dev/pts /mnt/dev/pts
+sudo mount -t proc proc /mnt/proc
+sudo mount -t sysfs sysfs /mnt/sys
+sudo mkdir -p /mnt/etc/dracut.conf.d
+sudo tee /mnt/etc/dracut.conf.d/90-usb-root.conf >/dev/null <<'EOF'
+hostonly="no"
+add_drivers+=" usb-storage uas xhci_hcd xhci-pci ehci-pci ehci-hcd sd_mod usbhid "
+filesystems+=" ext4 vfat "
+EOF
+kver=$(ls /mnt/usr/lib/modules | sort -V | tail -1)
+sudo chroot /mnt dracut --force --no-hostonly "/boot/initramfs-$kver.img" "$kver"
+sudo chroot /mnt lsinitrd "/boot/initramfs-$kver.img" | grep -E 'usb-storage|uas|xhci|sd_mod'
+# Edit /mnt/etc/default/grub and add rootwait rootdelay=5 to
+# GRUB_CMDLINE_LINUX_DEFAULT, then regenerate the menu:
+sudo chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
+sudo umount /mnt/sys /mnt/proc /mnt/dev/pts /mnt/dev /mnt/boot/efi /mnt
+```
+
+Adjust partition numbers (`sdX2`, `sdX3`) to match your layout. Boot the Samsung from the SSD and complete the checklist in §10. Only after Wi-Fi, audio, brightness, suspend/resume and the browser/PDF checks pass should you repeat the install on the internal disk. The external-SSD path above was boot-tested with both UEFI and BIOS GRUB; the validated install used the generic initramfs shown above.
+
 ## 3. Install the base system
 
 Boot the live image and log in with the credentials shown by the ISO (historically `root` / `voidlinux`). Then run:
@@ -58,19 +122,22 @@ Installer selections:
 - **Keyboard/locale/time zone:** Choose your actual settings (e.g., Brazilian Portuguese keyboard and America/Sao_Paulo if applicable).
 - **Source:** `Network` when networking works; otherwise `Local`.
 - **User:** Create a normal user; ensure it has administrative (`wheel`) access.
-- **Partitioning:** UEFI + GPT if the firmware is booted in UEFI mode.
-- **Bootloader:** GRUB on the internal disk, using the UEFI setup.
+- **Partitioning:** GPT. Use UEFI + ESP when the firmware is booted in UEFI mode; add a 1 MiB BIOS boot partition if you also need legacy/BIOS fallback.
+- **Bootloader:** GRUB on the target disk. Install UEFI GRUB into the ESP; if legacy fallback is required, also install BIOS GRUB (`grub-install --target=i386-pc`).
 
-Suggested partition layout for a 128 GB disk:
+Suggested partition layout for a 128 GB disk (adjust for the actual disk):
 
 | Partition | Size | Type | Filesystem | Mount point |
 |---|---:|---|---|---|
+| BIOS boot (optional) | 1 MiB | BIOS boot | none | none |
 | EFI System Partition | 512 MiB | EFI System | FAT32 / vfat | `/boot/efi` |
 | Root | Rest of disk | Linux filesystem | ext4 | `/` |
 
+The 1 MiB BIOS boot partition is only needed for legacy/BIOS boot; it is harmless on UEFI-only systems and must precede the ESP. For an external-SSD rehearsal that must boot on either firmware, use the layout and post-install steps in §2.1.
+
 No dedicated swap partition is required for an initial ZRAM-based setup. **Trade-off:** without sufficiently sized persistent swap, disk-backed swap, and suitable configuration, hibernation will not work. If hibernation is important, design disk swap *before* installation.
 
-In the installer's partition editor, verify disk **capacity, name and existing ChromeOS Flex partitions** before selecting Write. Assign both mount points in the Filesystems step. Complete the installation, unplug the USB, and reboot.
+In the installer's partition editor, verify disk **capacity, name and existing ChromeOS Flex partitions** before selecting Write. For an external-SSD rehearsal, confirm the model/size and that the internal eMMC is not selected. Assign both mount points in the Filesystems step. Complete the installation, unplug the live USB, and reboot.
 
 Official installation steps: <https://docs.voidlinux.org/installation/live-images/guide.html>
 
@@ -92,16 +159,22 @@ sudo xbps-install -S \
   mesa-dri xf86-input-libinput \
   dbus elogind NetworkManager \
   firefox pcmanfm xterm \
-  dejavu-fonts-ttf
+  dejavu-fonts-ttf pciutils usbutils
 ```
 
 Check package names with `xbps-query -Rs NAME` if repositories have changed. For Intel video acceleration install:
 
 ```sh
-sudo xbps-install -S intel-video-accel
+sudo xbps-install -S intel-video-accel linux-firmware-intel
 ```
 
-The kernel usually supplies Intel firmware dependencies through `linux-firmware-intel`. Do not install legacy `xf86-video-intel` unless the default modesetting driver is demonstrably problematic.
+Install Wi-Fi/Bluetooth firmware if `dmesg` reports missing firmware for the detected chipset; the package is often `linux-firmware-network`:
+
+```sh
+sudo xbps-install -S linux-firmware-network
+```
+
+CPU microcode (`intel-ucode`) is optional and may require the nonfree repository. Do not install legacy `xf86-video-intel` unless the default modesetting driver is demonstrably problematic.
 
 ### Enable only essential runit services
 
@@ -205,6 +278,12 @@ A practical first attempt:
 sudo xbps-install -S pulseaudio pavucontrol alsa-utils
 ```
 
+On newer Intel audio hardware, install the Sound Open Firmware and ALSA UCM data if the card is detected but no outputs or controls appear:
+
+```sh
+sudo xbps-install -S sof-firmware alsa-ucm-conf
+```
+
 Log back into the IceWM session, then test audio with Firefox or `speaker-test` (from `alsa-utils`). If opting for PipeWire instead, follow Void's official configuration before enabling it: <https://docs.voidlinux.org/config/media/pipewire.html>.
 
 ### Intel video
@@ -266,6 +345,7 @@ Void's official power-management reference: <https://docs.voidlinux.org/config/p
 
 ## 10. Post-install validation checklist
 
+- [ ] External-SSD rehearsal (if used): boots from the SSD and `findmnt /` reports the USB device.
 - [ ] Boots from internal storage without the USB installer.
 - [ ] Wi-Fi reconnects after a reboot.
 - [ ] `startx` opens IceWM without running as root.
@@ -276,6 +356,8 @@ Void's official power-management reference: <https://docs.voidlinux.org/config/p
 - [ ] Suspend and resume preserve Wi-Fi, audio, and display function.
 - [ ] ZRAM or swap configuration is understood and verified with `swapon --show`.
 - [ ] Browser memory consumption is manageable with a few typical tabs.
+
+For an external-SSD rehearsal, complete this checklist on the SSD before erasing the internal disk.
 
 Useful diagnostics:
 
@@ -290,13 +372,15 @@ lspci -nnk   # if pciutils is installed
 
 ## 11. Common problems
 
-**Boot fails after install:** Confirm USB was booted in UEFI mode, GPT partition layout, EFI System Partition mounted at `/boot/efi`, and GRUB installed. See <https://docs.voidlinux.org/installation/guides/chroot.html> for UEFI repair guidance.
+**Boot fails after install:** Confirm the firmware mode, GPT partition layout, EFI System Partition mounted at `/boot/efi`, and GRUB installed. If the firmware may use legacy/BIOS mode, verify the BIOS boot partition and BIOS GRUB. See <https://docs.voidlinux.org/installation/guides/chroot.html> for UEFI repair guidance.
 
-**No Wi-Fi:** Inspect `ip link`, `lspci -nnk` or `lsusb`, and kernel logs. Identify the Wi-Fi chipset before downloading firmware. Confirm that no competing wireless manager remains enabled.
+**Boot fails from an external USB SSD:** This is usually an initramfs problem. A host-only initramfs generated on another machine may lack `usb-storage`, `uas`, `xhci_hcd`, `xhci-pci` or `sd_mod`. Regenerate a generic initramfs with the configuration in §2.1, add `rootwait rootdelay=5`, verify the root UUID in GRUB and `lsblk -o NAME,TRAN`, and confirm the USB disk is selected in the boot menu. UEFI boot is generally more robust than legacy boot when the SSD is not the first disk.
+
+**No Wi-Fi:** Inspect `ip link`, `lspci -nnk` or `lsusb`, and kernel logs. Identify the Wi-Fi chipset before downloading firmware; install `linux-firmware-network` if `dmesg` reports missing firmware. Confirm that no competing wireless manager remains enabled.
 
 **`startx` fails:** Run `startx` as your normal user from a local TTY, verify `elogind` and `dbus`, and inspect Xorg logs and `~/.xinitrc`. Avoid random `chmod` changes to `/dev` devices.
 
-**No audio:** Check output selection with `pavucontrol`, verify the chosen audio server and inspect ALSA cards using `aplay -l`.
+**No audio:** Check output selection with `pavucontrol`, verify the chosen audio server and inspect ALSA cards using `aplay -l`. On newer Intel hardware, install `sof-firmware` and `alsa-ucm-conf`.
 
 **Video remains choppy:** Review `vainfo`, Firefox `about:support`, YouTube codec choice, CPU usage and thermals. Switching window managers cannot solve browser decode bottlenecks.
 
@@ -332,6 +416,7 @@ Back up your user configuration (`~/.icewm`, `~/.xinitrc`, browser profile/bookm
 - runit services: <https://docs.voidlinux.org/config/services/index.html>
 - Sound: <https://docs.voidlinux.org/config/media/index.html>
 - Power management: <https://docs.voidlinux.org/config/power-management.html>
+- Kernel/initramfs: <https://docs.voidlinux.org/config/kernel.html>
 
 ---
 
