@@ -1,0 +1,3 @@
+prog "Firefox" firefox firefox
+prog "Files" folder pcmanfm
+prog "Terminal" xterm xterm

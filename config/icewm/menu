@@ -1,0 +1,9 @@
+prog "Firefox" firefox firefox
+prog "Files" folder pcmanfm
+prog "Terminal" xterm xterm
+prog "PDF reader" zathura zathura
+prog "Audio settings" multimedia-volume-control pavucontrol
+prog "Wi-Fi (terminal)" network-wireless xterm -e nmtui
+separator
+restart "Restart IceWM"
+logout "Log out"
